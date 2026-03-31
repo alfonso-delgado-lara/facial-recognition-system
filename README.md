@@ -93,4 +93,4 @@ The project compares the three approaches on **external images** outside the tra
 - Alfonso Delgado Lara
 - Diego Rivera Suárez
 
-This project received a qualification of 9.2/10 at the Statistical Learning subject for the MSc in Big Data at Universidad Carlos III de Madrid.
+This project received a calification of 9.2/10 at the Statistical Learning subject for the MSc in Big Data at Universidad Carlos III de Madrid.
