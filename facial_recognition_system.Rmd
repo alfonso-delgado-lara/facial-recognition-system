@@ -1,0 +1,1584 @@
+---
+title: "ASSIGNMENT 1 STATISTICAL LEARNING: FACIAL RECOGNIZER"
+author: "Alfonso Delgado Lara & Diego Rivera Suárez"
+output:
+  html_document:
+    df_print: paged
+    theme: flatly
+    toc: true
+---
+
+# Part A: Principal Component Analysis.
+
+### Loading up the data:
+
+As a first step, we are going to upload all the images that will be used for this assignment. We will be using the "magick" library to upload all the images and create a dataframe with all of them. We will be codifying them in RGB, and normalizing each color intensity to the [0,1] interval.
+
+The dataframe will have dimensions of 150x108.000. In each row, we will have each of the 150 pictures and in every column, the intensity of each of the 36.000 pixels. The first 36.000 columns will have the intensity in red, then in blue and, finally, in green.
+
+```{r}
+library(magick)
+library(gtools)
+
+ruta <- "Training"
+files <- list.files(ruta, full.names = TRUE, pattern = "\\.jpg$")
+files <- mixedsort(files)
+
+images_list <- lapply(files, function(img_path) {
+
+  img <- image_read(img_path)
+  img_rgb <- image_convert(img, colorspace = "RGB")
+
+  # Extraer array como raw → [canal, alto, ancho]
+  arr <- image_data(img_rgb)
+
+  # Convertir cada canal a integer preservando estructura
+  R <- as.integer(arr[1,,])
+  G <- as.integer(arr[2,,])
+  B <- as.integer(arr[3,,])
+
+  # Linearizar directamente SIN t(), SIN aperm()
+  R <- as.vector(R)
+  G <- as.vector(G)
+  B <- as.vector(B)
+
+  pixel_values <- c(R, G, B) / 255
+
+  return(pixel_values)
+})
+
+matrix_images <- do.call(rbind, images_list)
+df_images <- as.data.frame(matrix_images)
+
+
+# Generate labels based on structure: 25 people, 6 photos each
+person_names <- paste("Person", 1:25)
+labels <- rep(person_names,each=6)
+```
+
+### Function for calculating PCA:
+
+The next step in this assignment is to implement a function that calculates the Principal Component Analysis. The PCA is a method for reducing the dimensionality of our dataframe. Since we are working with more than 100k variables, this method will be crucial for having reasonable computation times.
+
+The explanation of how the PCA method works exceeds the intentionallity of this assignment. Nevertheless, as a quick summary, it is necessary to substract the mean to each of the columns, calculate the variances and covariances matrix and, finally, compute its eigenvalues and eigenvectors. The eigenvalues will represent how much of the variance each of the component explains and each eigenvector will be each of the components themselves.
+
+```{r}
+pca <- function(data) {
+  X <- as.matrix(data) 
+  n <- nrow(X)
+  mu <- colMeans(X) # We calculate the mean of each column.
+  X_centered <- sweep(X, 2, mu, FUN = "-") # We substract the average to each column.
+  
+  # Now, we calculate the Var matrix. It is usually calculate by doing:
+  #                         Var = 1/(n-1)X'*X
+  # Nevertheless, in this case, since this matrix has a 108.000x108.000 dimension, 
+  # we will do a little trick. Instead, we will calculate:
+  #                         Var = 1/(n-1)X*X'
+  # This matrix has a 150x150 dimension, which is much lower than the original one 
+  # and, furthermore, they share exactly the same positive eigenvalues, which are 
+  # the ones needed for this method. Thus, this matrix can be used:
+  cov_matrix <- (X_centered %*% t(X_centered)) / (n - 1)
+  
+  # We compute the spectral descomposition of the Var-Cov matrix.
+  eig <- eigen(cov_matrix)
+  D <- eig$values
+  D[D < 0] <- 0
+  P <- eig$vectors
+  
+  # We calculate the scores and loadings for this method:
+  
+  scores <- P %*% diag(sqrt(D))
+  rownames(scores) <- rownames(data)
+  colnames(scores) <- paste0("PC", 1:n)
+  
+  loadings <- t(X_centered) %*% P %*% diag(1/sqrt(D))
+  rownames(loadings) <- colnames(data)
+  colnames(loadings) <- paste0("PC", 1:n)
+  
+  # Finally, we output the results of the analysis in a list:
+  
+  list(
+    means = mu,
+    eigenvalues = D,
+    scores = scores,
+    loadings = loadings
+  )
+}
+```
+
+Once we have constructed our PCA function, it is time to see if it is actually functioning. For this end, we will calculate the first two principal components for our database and, then, represent them graphically. If everything is working fine, pictures corresponding to different individuals should be separated among themselves.
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# 1. Execute your custom PCA function
+# Assuming 'df_images' contains the image data and 'labels' contains the IDs
+res_pca <- pca(df_images)
+
+# 2. Prepare data for plotting
+# We extract the first two columns from the scores matrix
+df_plot <- data.frame(
+  PC1 = res_pca$scores[, 1],
+  PC2 = res_pca$scores[, 2],
+  Subject = as.factor(labels) # Convert to factor for discrete coloring
+)
+
+# 3. Calculate Centroids (Mean point per person)
+# This allows us to place the label in the center of the cluster instead of labeling every point
+df_centroids <- df_plot %>%
+  group_by(Subject) %>%
+  summarise(
+    PC1_mean = mean(PC1),
+    PC2_mean = mean(PC2)
+  )
+
+# 4. Calculate Explained Variance for axes labels
+var_pc1 <- round(res_pca$eigenvalues[1] / sum(res_pca$eigenvalues) * 100, 2)
+var_pc2 <- round(res_pca$eigenvalues[2] / sum(res_pca$eigenvalues) * 100, 2)
+
+# 5. Generate the 2D Plot
+ggplot() +
+  # Layer 1: Scatter plot of all images
+  geom_point(data = df_plot, 
+             aes(x = PC1, y = PC2, color = Subject), 
+             size = 2, alpha = 0.6) + 
+  
+  # Layer 2: Text labels centered on each subject's cluster
+  geom_text(data = df_centroids, 
+            aes(x = PC1_mean, y = PC2_mean, label = Subject),
+            color = "black", fontface = "bold", size = 4) +
+  
+  # Styling 
+  theme_minimal() +
+  labs(title = "PCA Projection (First 2 Components)",
+       subtitle = "Distribution of the 25 subjects in the reduced space",
+       x = paste0("PC1 (", var_pc1, "% Variance)"),
+       y = paste0("PC2 (", var_pc2, "% Variance)")) +
+  
+  # Remove the legend since labels are already on the plot
+  theme(legend.position = "none")
+```
+
+As it can be seen in the graphic, most individuals appear separated from one another. However, there are certain individuals, such as person 4 and person 25, that appear very close together in the graphic. This just indicates physical similarity and may be a conflictive factor when trying to classify the images. Nevertheless, in this case onlt two dimensions have been selected. Probably in higher order dimensions they appear more segregated than in this two-dimensional representation.
+
+### Function for implementing KNN
+
+As a next step, the KNN method is going to be implemented in R. At first, we have designed an auxiliary function for constructing all the inputs for the actual KNN classifier. This function will be useful for training the model, while the actual classification will be carried out by another function.
+
+```{r}
+build_knn_classifier <- function(data, ids, variance_ratio, k, metric, threshold) {
+  
+  # First, we apply the PCA analysis.
+  pca <- pca(data)
+  
+  # Then, we select the minimum number of principal components needed for explaining the desired percentage of variance explained. 
+  total_var <- sum(pca$eigenvalues)
+  cum_var <- cumsum(pca$eigenvalues) / total_var
+  n_pc <- which(cum_var >= variance_ratio)[1]
+  
+  scores_train <- pca$scores[, 1:n_pc, drop = FALSE]
+  
+  # For the next step, we calculate the maximum and minimum distance for each metric, which will be needed for normalizing the distances (which will be useful when implementing a threshold).
+  
+  if (metric == "euclidean") {
+    d_obj <- dist(scores_train, method = "euclidean")
+    dist_min <- min(d_obj)
+    dist_max <- max(d_obj)
+    
+  } else if (metric == "manhattan") {
+    d_obj <- dist(scores_train, method = "manhattan")
+    dist_min <- min(d_obj)
+    dist_max <- max(d_obj)
+    
+  } else if (metric == "cosine") {
+    # The cosine distance will be calculated manually, since the dist function does not calculate it.
+    X <- scores_train
+    sim <- X %*% t(X)
+    norms <- sqrt(rowSums(X^2))
+    denom <- norms %*% t(norms)
+    denom[denom == 0] <- 1e-10
+    sim <- sim / denom
+    sim[sim > 1] <- 1
+    sim[sim < -1] <- -1
+    dist_matrix_full <- 1 - sim
+    
+    d_obj <- as.dist(dist_matrix_full)
+    dist_min <- min(d_obj)
+    dist_max <- max(d_obj)
+    
+  } else {
+    stop("Unknown metric")
+  }
+  
+  # Finally, we construct the final model, a list with all the needed parameters for implementing the KNN method.
+  
+  model <- list(
+    means = pca$means,
+    loadings = pca$loadings[, 1:n_pc, drop = FALSE],
+    scores_train = scores_train,
+    ids = ids,
+    eigenvalues = pca$eigenvalues[1:n_pc],
+    k = k,
+    metric = metric,
+    threshold = threshold,
+    n_pc = n_pc,
+    # Guardamos los límites para normalizar en el test
+    dist_min = dist_min,
+    dist_max = dist_max
+  )
+  
+  return(model)
+}
+```
+
+And, now, as it was previously mentioned, it is time to implement the KNN method. Although there is an implementation in R of the KNN algorithm from an external library, since in the statement of the assignment it has not been left clear whether its use is allowed or not, we have decided to do our own implementation of the algorithm. It will take as an input a new image and the output of the **build_knn_classifier** function.
+
+```{r}
+classify_knn <- function(new_image, model){
+  
+  # As a first step, it is necessary to calculate all the PCA for the data we are working with. Thus, we will scale the data and obtain all the needed outputs from the model. 
+  
+  x <- as.numeric(new_image)
+  x_centered <- x - model$means
+  
+  pc_new_raw <- as.vector(x_centered %*% model$loadings)
+  n_train <- nrow(model$scores_train)
+  pc_new <- pc_new_raw / (n_train - 1) 
+  
+  scores_train <- model$scores_train
+  pc_new_mat <- matrix(pc_new, nrow = n_train, ncol = model$n_pc, byrow = TRUE)
+  
+  # Now, we calculate the distances, covering all the possible metrics:
+  
+  if(model$metric == "euclidean"){
+    dists <- sqrt(rowSums((scores_train - pc_new_mat)^2))
+  } else if(model$metric == "manhattan"){
+    dists <- rowSums(abs(scores_train - pc_new_mat))
+  } else if(model$metric == "cosine"){
+    num <- rowSums(scores_train * pc_new_mat)
+    den <- sqrt(rowSums(scores_train^2)) * sqrt(sum(pc_new^2))
+    den[den == 0] <- 1e-10
+    dists <- 1 - (num / den)
+  } else {
+    stop("Unknown metric")
+  }
+  
+  # The next step will be to normalize the distances to the [0,1] interval. This is just a convention, made for setting up a maximum for each of the possible metrics at 1.
+  
+  range_dist <- model$dist_max - model$dist_min
+  if(range_dist == 0) range_dist <- 1e-10
+  
+  dists_norm <- (dists - model$dist_min) / range_dist
+  
+  # Now, we are going to implement the threshold for thsi model. In case the minimum distance to any member of the database is bigger than the threshold, we will reject the prediction automatically.
+  
+  min_dist_observed <- min(dists_norm)
+  if(min_dist_observed > model$threshold){
+    return("0") 
+  }
+  
+  # Finally, we apply the KNN method, searching for the closest k neighbors for each of the variables.
+  
+  order_idx <- order(dists_norm) # Order the indices by proximity to new_image.
+  top_k_idx <- order_idx[1:model$k] # Retrieve the k closest ones.
+  top_k_labels <- model$ids[top_k_idx] # Get the labels of them.
+  
+  votes <- table(top_k_labels) # Count which of the people have more votes.
+  prediction <- names(sort(votes, decreasing = TRUE))[1] # Takes the person who appears the most between the k closest neighbors as the prediction.
+  
+  return(prediction)
+}
+```
+
+### Hyperparmeters Optimization
+
+Up until now, this assignment has been focusing on implementing the KNN method in R. However, this method has got one big problem: it has many different hyperparameters. Hyperparameters are generally external values that influde directly on the outcome of the model. In this particular case, we are working with a total of three hyperparameters: k (the number of closest neighbors), the metric and the percentage of variance explained by the principal components we have decided to use.
+
+For finding the best possible hyperparameters, there are several techniques. For this assignment, the most rudimentary of these techniques will be used: Grid Search. Grid Search basically consists in giving the model a list of possible values for each hyperparameter, trying all the possible combinations, use 5-folds cross validation to have some accuracy measure and, finally, retaining the combination of hyperparameters that provide the highest accuracy. In short, this is what our next function does, implementing the Grid Search method.
+
+```{r}
+optimize_knn_hyperparameters <- function(data, labels, var_list, k_list, metric_list, folds = 5){
+  
+  if(!is.matrix(data)) stop("Data must be a matrix")
+  
+  set.seed(566492)
+  # First, we calculate the number of maximum iterations as the product of the lengths of the lists of possible hyperparameters.
+  total_iter <- length(var_list) * length(k_list) * length(metric_list)
+  n <- nrow(data)
+  
+  # We start the cross validation, by shuffling all the indices.
+  idx <- sample(rep(1:folds, length.out = n))
+  
+  results <- data.frame()
+  current_iter <- 0
+  # We iterate on all the possible values of the list of hyperparameters.
+  for(var in var_list){
+    for(k in k_list){
+      for(metric in metric_list){
+        # We set the threshold = 2 so that all the photos are accepted. This is because, in this case, we are just training the model with photos of the dataset, so there is no need to reject anyone.
+        thr <- 2 
+        current_iter <- current_iter + 1
+        cat(sprintf("[%d/%d] Testing -> Var: %.2f | K: %d | Metric: %s ... ", 
+                    current_iter, total_iter, var, k, metric))
+        
+        acc_vec <- c() # The vector where will be storing all the accuracies.
+        
+        # We initialize now the cross validation process.
+        for(f in 1:folds){
+          # For each of the iterations, we create the training and test sets.
+          test_indices <- which(idx == f)
+          train_indices <- setdiff(1:n, test_indices)
+          
+          X_train <- data[train_indices, , drop=FALSE]
+          X_test <- data[test_indices, , drop=FALSE]
+          
+          y_train <- labels[train_indices]
+          y_test <- labels[test_indices]
+          
+          # We build the model using the training set: 
+          model <- build_knn_classifier(X_train, y_train, var, k, metric, thr)
+          
+          # And now we predict using the classification function:
+          y_pred <- sapply(1:nrow(X_test), function(i) {
+            classify_knn(X_test[i,], model)
+          })
+          
+          # In this step, we calculate the accuracy for each fold and keep all in the vector we previously metioned.
+          acc <- mean(as.character(y_pred) == as.character(y_test))
+          acc_vec <- c(acc_vec, acc)
+        }
+        # And the final accuracy will be the average for each of the folds.
+        mean_acc <- mean(acc_vec)
+        cat(sprintf("Done. Acc: %.4f\n", mean_acc))
+        
+        results <- rbind(results, data.frame(
+          variance = var,
+          k = k,
+          metric = metric,
+          threshold = thr, 
+          accuracy = mean_acc
+        ))
+      }
+    }
+  }
+  
+  # The result will be the set of hyperparameters that provide the maximum accuracy
+  
+  best_row <- results[which.max(results$accuracy), ]
+  list(best = best_row, all_results = results)
+}
+```
+
+One little comment about the previous function. While the cross validation was being designed, the decision not to stratify the data was consciously made. The reason behind this decision was that, since the aim is to design a facial recognition system, the system needs to test unknown faces for the model. Thus, if stratification had been made, there would always be at least one representative for each of the people involved in the database and, as a result, the model would not have been trained to "handle the unknown". Furthermore, also some overfitting may appear if there is always a representative and, by not stratifying, this is being avoided.
+
+Once the function has been made, now it is time to get down to work. We have set up a list for each of the hyperparameters and applied the optimized them. These are the results:
+
+```{r, results = 'hide'}
+var_list <- c(0.8,0.85,0.9,0.95)
+k_list <- c(1, 3, 5)
+metric_list <- c("euclidean", "cosine","manhattan")
+X <- as.matrix(df_images)
+  
+optimization_results <- optimize_knn_hyperparameters(X, labels, var_list, k_list, metric_list)
+
+print(optimization_results$best)
+```
+
+```{r}
+library(kableExtra)
+full_results_clean <- optimization_results$all_results %>%
+  arrange(desc(accuracy)) %>%
+  mutate(metric = tools::toTitleCase(metric))
+
+full_results_clean %>%
+  kable(
+    format = "html",
+    digits = 4,
+    col.names = c("Variance Ratio", "k", "Metric", "Threshold", "Mean Accuracy"),
+    align = 'c'
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#348AA7") %>%
+  row_spec(1, bold = TRUE, background = "#E8F4F8")
+```
+
+And so, the best hyperparameters are k = 1, retaining a 90% of the variance and using the euclidean metric.
+
+### Calculating the threshold
+
+Up until now, we have obtained th best hyperparameters, but setting the threshold = 2 (which is equivalent to having and infinite threshold, since all the distances where normalized to the [0,1] interval). This means that none of the pictures, even if they correspond to a vet different person, are being rejected. As a result, in this part of the assignment, before training the final model with the best hyperparameters, it is necessary to obtain a reasonable value for the threshold.
+
+Thus, another new function for determining the threshold has been designed. This function, with the optimal values of the metric and percentage of variance, will represent the distances between members of the same class and the distances between members of different classes. These will constitute two approximate gaussians that overlap in a region of the [0,1] interval. Any of the values of the overlapping region can be used as the threshold (since they will separate members from different classes). However, in this concrete case, the threshold will be taken as the abscise of the intersection point between both curves.
+
+```{r}
+library(ggplot2)
+
+analyze_threshold_distributions <- function(data, labels, metric = "euclidean") {
+  
+  # First, it is necessary to compute the matrix distance and normalize it:
+  
+  n <- nrow(data)
+  X <- as.matrix(data)
+  
+  if (metric == "euclidean") {
+    dist_mat <- as.matrix(dist(X, method = "euclidean"))
+  } else if (metric == "manhattan") {
+    dist_mat <- as.matrix(dist(X, method = "manhattan"))
+  } else if (metric == "cosine") {
+    sim <- X %*% t(X)
+    norms <- sqrt(rowSums(X^2))
+    sim <- sim / (norms %*% t(norms))
+    sim[sim > 1] <- 1; sim[sim < -1] <- -1
+    dist_mat <- 1 - sim
+  } else {
+    stop("Métrica no soportada")
+  }
+  
+  # Normalization of the distance matrix:
+  min_val <- min(dist_mat)
+  max_val <- max(dist_mat)
+  if ((max_val - min_val) > 0) {
+    dist_mat <- (dist_mat - min_val) / (max_val - min_val)
+  }
+  
+  # We now separate the curve in different classes:
+  match_matrix <- outer(labels, labels, "==")
+  lower_tri_mask <- lower.tri(dist_mat)
+  
+  intra_distances <- dist_mat[match_matrix & lower_tri_mask]
+  inter_distances <- dist_mat[!match_matrix & lower_tri_mask]
+  
+  
+  # Now, we calculate the density curves for each of the groups:
+  d_intra <- density(intra_distances, from = 0, to = 1, n = 1024)
+  d_inter <- density(inter_distances, from = 0, to = 1, n = 1024)
+  
+  # Now, we calculate the height difference between both curves:
+  diff_val <- abs(d_intra$y - d_inter$y)
+  
+  # The intersection point will be that which minimizes the height difference between both curves:
+  min_idx <- which.min(diff_val)
+  optimal_threshold <- d_intra$x[min_idx]
+  
+  cat(sprintf("The optimal threshold value is: %.4f\n", optimal_threshold))
+  
+  # Now, we prepare the data for plotting them:
+  df_plot <- data.frame(
+    distance = c(intra_distances, inter_distances),
+    type = c(rep("Intra-class (Same person)", length(intra_distances)),
+             rep("Inter-class (Different person)", length(inter_distances)))
+  )
+  
+  # We plot both curves with the ggplot library:
+  
+  p <- ggplot(df_plot, aes(x = distance, fill = type)) +
+    geom_density(alpha = 0.5) +
+    geom_vline(xintercept = optimal_threshold, linetype = "dashed", color = "black", size = 1) +
+    annotate("text", x = optimal_threshold, y = 0, 
+             label = paste0("Thr: ", round(optimal_threshold, 3)), 
+             vjust = -1.5, angle = 90, color = "black") +
+    scale_fill_manual(values = c("red", "blue")) +
+    labs(title = paste("Distance distribution"),
+         x = "Distance",
+         y = "Density") +
+    theme_minimal() +
+    scale_x_continuous(limits = c(0, 1))
+  
+  print(p)
+  
+  # We return the optimal threshold.
+  return(list(
+    optimal_threshold = optimal_threshold,
+    dist_min = min_val,
+    dist_max = max_val
+  ))
+}
+```
+
+And, for the optimal values obtained in the previous section, we run this previous function to calculate the optimal threshold value:
+
+```{r}
+# First, it is necessay to calculate the PCA representation.
+pca_result <- pca(X)
+
+# Now, we determine the number of principal components necessary to retain a 90% of the variance, which is the optimal value obtained in the HPO function.
+variance_to_keep <- optimization_results$best$variance
+total_var <- sum(pca_result$eigenvalues)
+cum_var <- cumsum(pca_result$eigenvalues) / total_var
+n_pc <- which(cum_var >= variance_to_keep)[1]
+
+# We project the data into the selected principal components.
+X_projected <- pca_result$scores[, 1:n_pc]
+
+# And, finally, we apply the previous function to obtain the optimal threshold value:
+thr_anal <- analyze_threshold_distributions(data = X_projected,
+                                            labels = labels,
+                                            metric = as.character(optimization_results$best$metric))
+```
+
+### Training the final model
+
+Once the optimal hyperparameters have been obtained and the optimal threshold value for those hyperparameters has been calculated, now it is time to train the final facial recognition model. In this case, a 5 fold cross validation using the whole database will be employed. This will give us a final estimation of what the accuracy of the facial recognition system is.
+
+```{r}
+validate_simple_pca <- function(data, labels, best_params){
+  
+  set.seed(566492)
+  n_folds <- 5
+  
+  # First, we assign a random fold to each of the images:
+  n_samples <- nrow(data)
+  folds_index <- sample(rep(1:n_folds, length.out = n_samples))
+  
+  # Now, we create a vector where we will store the accuracy of each of the iterations:
+  resultados_folds <- c()
+  
+  print("Initiating the cross validation process..")
+  
+  for(i in 1:n_folds){
+    
+    # We split the dataset in train and test:
+    idx_test <- which(folds_index == i)
+    idx_train <- setdiff(1:n_samples, idx_test)
+    
+    X_train <- data[idx_train, ]
+    y_train <- labels[idx_train]
+    
+    X_test <- data[idx_test, ]
+    y_test <- labels[idx_test]
+    
+    # Now, we build the model with the best parameters:
+    model <- build_knn_classifier(
+      data = X_train, 
+      ids = y_train, 
+      variance_ratio = best_params$variance, 
+      k = best_params$k, 
+      metric = as.character(best_params$metric), 
+      threshold = thr_anal$optimal_threshold
+    )
+    
+    predictions <- c()
+    # Now, we will classify each of the images in the testing sample:
+    for(j in 1:nrow(X_test)){
+      pred <- classify_knn(X_test[j, ], model)
+      predictions <- c(predictions, pred)
+    }
+    
+    # Now, we will determine the number of successes and calculate the accuracy with it:
+    succ <- sum(predictions == y_test)
+    acc <- succ/ length(y_test)
+    
+    resultados_folds <- c(resultados_folds, acc)
+    
+    # We print the accuracy obtained at each of the folds:
+    print(paste("Fold", i, "Accuracy:", round(acc, 3)))
+  }
+  
+  # And, finally, print the result as the mean of the previous ones:
+  media_acc <- mean(resultados_folds)
+  print(paste("Final average accuracy: ", round(media_acc, 4)))
+  
+  return(media_acc)
+}
+```
+
+And the results of the cross validation process are:
+
+```{r}
+#Displaying results
+fold_accuracies <- validate_simple_pca(X, labels, optimization_results$best)
+
+```
+
+Thus, the final average accuracy will be 0.9867, which is really close to the unit, meaning that the facial recognition system developed with the PCA method is really powerful, at least for our training set.
+
+### Facial Recognition System without PCA
+
+As a final step for this part of the assignment, it is required to implement a facial recognition system, but without the use of the Principal Component Analysis. The procedure will be completely analogous to what we have been developing throughout the entirety of this assignment.
+
+Just as a quick note, it is important to remark that new analogous functions need to be implemented, not only setting the proportion of variance explained equal to 1. This is because, even if all the eigenvectors are selected, this will introduce an axis rotation in the database, meaning that all the distances (except the euclidean metric) are altered.
+
+As a first step, a new function for training the KNN will be created:
+
+```{r}
+build_raw_knn_classifier <- function(data, ids, k, metric, threshold) {
+
+  scores_train <- as.matrix(data) 
+  n_train <- nrow(scores_train)
+  
+  # For each of the metrics, we calculate the distance matrices and tha maximum and minimum of each distance.
+  
+  if (metric == "euclidean") {
+    d_obj <- dist(scores_train, method = "euclidean")
+    dist_min <- min(d_obj)
+    dist_max <- max(d_obj)
+    
+  } 
+  else if (metric == "manhattan") {
+    d_obj <- dist(scores_train, method = "manhattan")
+    dist_min <- min(d_obj)
+    dist_max <- max(d_obj)
+    
+  } else if (metric == "cosine") {
+    X <- scores_train
+    sim <- X %*% t(X)
+    norms <- sqrt(rowSums(X^2))
+    denom <- norms %*% t(norms)
+    denom[denom == 0] <- 1e-10
+    sim <- sim / denom
+    sim[sim > 1] <- 1
+    sim[sim < -1] <- -1
+    dist_matrix_full <- 1 - sim
+    
+    d_obj <- as.dist(dist_matrix_full)
+    dist_min <- min(d_obj)
+    dist_max <- max(d_obj)
+    
+  } else {
+    stop("Unknown metric")
+  }
+  
+  # We store the final results in a model.
+  model <- list(
+    scores_train = scores_train, 
+    ids = ids,
+    k = k,
+    metric = metric,
+    threshold = threshold,
+    dist_min = dist_min,
+    dist_max = dist_max
+  )
+  
+  return(model)
+}
+```
+
+Next, the function for implementing the KNN as a classifier will be replicated:
+
+```{r}
+classify_raw_knn <- function(new_image, model) {
+  
+  # We ensure the new image is a numeric format.
+  pc_new <- as.numeric(new_image)
+  
+  # Now, we load the scores from the model.
+  scores_train <- model$scores_train
+  n_train <- nrow(scores_train)
+  
+  # We create a neew matrix with the new image:
+  pc_new_mat <- matrix(pc_new, nrow = n_train, ncol = ncol(scores_train), byrow = TRUE)
+  
+  # We compute the distances to the new image, taking into account the metric.
+  
+  if (model$metric == "euclidean") {
+    dists <- sqrt(rowSums((scores_train - pc_new_mat)^2))
+  } else if (model$metric == "manhattan") {
+    dists <- rowSums(abs(scores_train - pc_new_mat))
+  } else if (model$metric == "cosine") {
+    num <- rowSums(scores_train * pc_new_mat)
+    den <- sqrt(rowSums(scores_train^2)) * sqrt(sum(pc_new^2))
+    den[den == 0] <- 1e-10
+    dists <- 1 - (num / den)
+  } else {
+    stop("Unknown metric")
+  }
+  
+  # Now, we normalize the distances, for the same reasons as before.
+  
+  range_dist <- model$dist_max - model$dist_min
+  if (range_dist == 0) range_dist <- 1e-10 
+  
+  dists_norm <- (dists - model$dist_min) / range_dist
+  
+  min_dist_observed <- min(dists_norm)
+  
+  # In case the minimum of the distances is bigger than the threshold, the new image is rejected.  
+  
+  if (min_dist_observed > model$threshold) {
+    return("0")
+  }
+  
+  # Finally, as it was previously explained, the KNN method is implemented:
+  
+  order_idx <- order(dists_norm)
+  top_k_idx <- order_idx[1:model$k]
+  top_k_labels <- model$ids[top_k_idx] 
+  
+  votes <- table(top_k_labels)
+  prediction <- names(sort(votes, decreasing = TRUE))[1]
+  
+  return(prediction)
+}
+```
+
+Now, once again, the Hyperparameter Optimization process will be carried out:
+
+```{r}
+optimize_raw_knn <- function(data, labels, k_list, metric_list, folds = 5) {
+  
+  if(!is.matrix(data)) data <- as.matrix(data)
+  n <- nrow(data)
+  idx <- sample(rep(1:folds, length.out = n))
+  results <- data.frame()
+  
+  # The total number of iterations will be the product of the lengths of both lists of hyperparameters.
+  total_iter <- length(k_list) * length(metric_list)
+  current_iter <- 0
+  
+  for(k in k_list){
+    for(metric in metric_list){
+ 
+      # We set the threashold equals to 2 for the same reason as before, to accept every value in this part of the process.
+      thr <- 2
+      current_iter <- current_iter + 1
+      cat(sprintf("[%d/%d] Testing RAW -> K: %d | Metric: %s ... ", 
+                  current_iter, total_iter, k, metric))
+     
+       # We initialize the vector that will store the accuracies:
+      acc_vec <- c()
+      
+      for(f in 1:folds){
+        
+      # For each of the folds, we divide the database in train and test.
+          
+        test_id <- which(idx == f)
+        train_id <- setdiff(1:n, test_id)
+        
+        X_train <- data[train_id, , drop=FALSE]
+        X_test <- data[test_id, , drop=FALSE]
+        
+        y_train <- labels[train_id]
+        y_test <- labels[test_id]
+        
+        # Finally, we train the model and predict the accuracy with the testing sample for each of the folds:
+        
+        model <- build_raw_knn_classifier(X_train, y_train, k, metric, thr)
+        
+        y_pred <- sapply(1:nrow(X_test), function(i) {
+          classify_raw_knn(X_test[i, ], model)
+        })
+        
+        acc_vec <- c(acc_vec, mean(as.character(y_pred) == as.character(y_test)))
+      }
+      
+      mean_acc <- mean(acc_vec)
+      cat(sprintf("Acc: %.4f\n", mean_acc))
+      
+      # We store the results:
+      
+      results <- rbind(results, data.frame(
+        k=k, 
+        metric=metric, 
+        threshold=thr, 
+        accuracy=mean_acc
+      ))
+    }
+  }
+  
+  # And, finally, we store the best results.
+  
+  best_row <- results[which.max(results$accuracy), ]
+  list(best = best_row, all_results = results)
+}
+```
+
+Let's do the HPO process for the database without applying the PCA. Even though there will be less iterations because there are less hyperparameters, the problem is still expected to take a lot since we are working in a way higher dimension. The same hyperparameters as before will be used:
+
+```{r, results = 'hide'}
+res_raw <- optimize_raw_knn(X, labels, k_list, metric_list)
+```
+
+```{r}
+full_results_clean <- res_raw$all_results %>%
+  arrange(desc(accuracy)) %>%
+  mutate(metric = tools::toTitleCase(metric))
+
+full_results_clean %>%
+  kable(
+    format = "html",
+    digits = 4,
+    col.names = c("k", "Metric","Threshold", "Mean Accuracy"),
+    align = 'c'
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#348AA7") %>%
+  row_spec(1, bold = TRUE, background = "#E8F4F8")
+```
+
+And so, the best hyperparameters are k = 1 and the euclidean (or Manhattan) metric, obtaining a perfect accuracy for each of the cases. This seems a reasonable value, especially taking into account that the accuracy was expected to increase since with PCA we lose some information, at expenses of a better execution time.
+
+Once the best hyperparameters have been calculated, now it is time to once again determine the optimal value for the threshold. For this specific case, the same function that was used for the PCA case can be recycled, since it does not include the PCA as a part of its implementation.
+
+```{r}
+thr_anal_raw <- analyze_threshold_distributions(data = X,
+                                                labels = labels,
+                                                metric = as.character(res_raw$best$metric))
+```
+
+Finally, now that all the hyperparameters have been calculated and their associated threshold, it is time for the final step: validating the final model without the use of PCA. Once again, it is necessary to implement an analogous function to the previous one:
+
+```{r}
+validate_raw_knn <- function(data, labels, best_params){
+  
+  set.seed(566492)
+  n_folds <- 5
+  n_samples <- nrow(data)
+  
+  # Shuffle the indices:
+  folds_index <- sample(rep(1:n_folds, length.out = n_samples))
+  
+  resultados_folds <- c()
+  
+  # We select the best hyperparameters
+  k_val <- as.numeric(best_params$k)[1]
+  metric_val <- as.character(best_params$metric)[1]
+  thr_val <- thr_anal_raw$optimal_threshold
+  
+  print("Initiating the cross validation...")
+  cat(sprintf("Configuration -> K: %d | Metric: %s | Threshold: %.4f\n", 
+              k_val, metric_val, thr_val))
+  
+  for(i in 1:n_folds){
+    
+    # We split the database in training and testing samples:
+    
+    idx_test <- which(folds_index == i)
+    idx_train <- setdiff(1:n_samples, idx_test)
+    
+    X_train <- data[idx_train, , drop = FALSE]
+    y_train <- labels[idx_train]
+    
+    X_test <- data[idx_test, , drop = FALSE]
+    y_test <- labels[idx_test]
+    
+    # Next, we build the model with the training sample:
+    
+    model <- build_raw_knn_classifier(
+      data = X_train, 
+      ids = y_train, 
+      k = k_val, 
+      metric = metric_val, 
+      threshold = thr_val 
+    )
+    
+    # And now we predict using the testing sample:
+    
+    y_pred <- sapply(1:nrow(X_test), function(j) {
+      classify_raw_knn(X_test[j, ], model)
+    })
+    
+    # We calculate the accuracy of the model:
+    
+    succ <- sum(as.character(y_pred) == as.character(y_test))
+    acc <- succ / length(y_test)
+    
+    resultados_folds <- c(resultados_folds, acc)
+    
+    print(paste("Fold", i, "Accuracy:", round(acc, 3)))
+  }
+  
+  media_acc <- mean(resultados_folds)
+  print("--------------------------------")
+  print(paste("Final average accuracy: ", round(media_acc, 4)))
+  
+  return(media_acc)
+}
+```
+
+And the results of the cross validation are:
+
+```{r}
+#Displaying results
+fold_accuracies <- validate_raw_knn(X, labels, res_raw$best)
+
+```
+
+All in all, we have obtained an accuarcy of 0.967, which is an even smaller value than what we obtained for the implementation with PCA. As a result, if we take into account that this method is most costly computationally speaking and does not even improve the accuracy significantly, we can conclude that the use of PCA is more than recommended.º
+
+# Part B: Fisher Discriminant Analysis
+
+In this second part of the assignment, we focus on implementing a supervised facial recognizer using Fisher Discriminant Analysis (FDA). Unlike PCA, which as mentioned maximizes total variance without considering class labels, FDA aims to maximize class separability. The goal is to find a projection that maximizes the ratio of between-class scatter ($S_b$) to within-class scatter ($S_w$). Essentially, we want to cluster images of the same person tightly while pushing different people's clusters as far apart as possible.
+
+## Methodology: The PCA-FDA Approach
+
+The implementation faces a critical dimensional challenge which is the Small Sample Size problem. Given the data structure, there are $N = 150$ observations (25 people $\times$ 6 images) contrasted against $P$ features resulting from flattening and concatenating R, G, and B channels.
+
+Since $P \gg N$, calculating the Within-Class scatter matrix ($S_w$) directly results in a huge $P \times P$ matrix that is singular, as its rank is limited by $N$ (150). To resolve this, the following approach is applied:
+
+-   PCA Step: The 150 images are first projected into a lower-dimensional space. The number of components retained is $N - C$, which is $150 - 25 = 125$. This operation yields the transformation matrix $W_{pca}$ (Pixels $\to$ PCA Space) and ensures the matrices used in the next step are mathematically tractable and invertible.
+
+-   FDA Step: Fisher analysis is applied on this reduced 125-dimensional space. This operation yields the transformation matrix $W_{fda}$ (PCA Space $\to$ Fisher Discriminant Space).
+
+-   Final Projection: Both transformations are chained together to form a single, optimal projection matrix: $$W_{opt} = W_{pca} \cdot W_{fda}$$
+
+This final matrix $W_{opt}$ maps raw pixels directly to the discriminant space in a single step, minimizing within-class variance while maximizing between-class separation.
+
+$$\text{Raw Pixels } (\vec{x}) \xrightarrow{\text{Transformation } W_{pca}} \text{PCA Space } \xrightarrow{\text{Transformation } W_{fda}} \text{Fisher Space }$$\
+
+```{r}
+fisher <- function(data, labels) {
+  #Initialization of the data
+  X <- as.matrix(data)
+  y <- as.factor(labels)
+  
+  n <- nrow(X)
+  p <- ncol(X)
+  classes <- levels(y)
+  num_classes <- length(classes)
+  
+  #PCA
+  
+  mu <- colMeans(X)
+  X_centered <- sweep(X, 2, mu)
+  
+  #Eigen trick: calc covariance on n x n matrix instead of p x p
+  cov_matrix_pca <- (X_centered %*% t(X_centered)) / (n - 1)
+  eig_pca <- eigen(cov_matrix_pca)
+  
+  #Keep (N - Num_Classes) components to ensure Sw is positive definite
+  k_pca <- n - num_classes 
+  
+  D_pca <- eig_pca$values[1:k_pca]
+  V_pca_small <- eig_pca$vectors[, 1:k_pca]
+  
+  #Recover eigenvectors in original pixel space 
+  P_pca <- t(X_centered) %*% V_pca_small %*% diag(1/sqrt(D_pca))
+  
+  #Project data to reduced PCA space
+  X_pca <- X_centered %*% P_pca
+  
+  
+  
+  #Fisher
+  
+  #Now we work with the smaller matrix X_pca
+  mu_pca <- colMeans(X_pca) 
+  
+  #Initialize Sw and Sb
+  Sw <- matrix(0, nrow=k_pca, ncol=k_pca)
+  Sb <- matrix(0, nrow=k_pca, ncol=k_pca)
+  
+  for (cl in classes) {
+    idx <- which(y == cl)
+    Xc <- X_pca[idx, , drop=FALSE]
+    ni <- nrow(Xc)
+    
+    mu_class <- colMeans(Xc)
+    
+    #Within-class scatter: minimize spread inside each class
+    Xc_centered <- sweep(Xc, 2, mu_class)
+    Sw <- Sw + t(Xc_centered) %*% Xc_centered
+    
+    #Between-class scatter: maximize distance between class means
+    diff_mu <- mu_class - mu_pca
+    Sb <- Sb + ni * (diff_mu %*% t(diff_mu))
+  }
+  
+  #Add regularization for numerical stability, without it problems in the execution
+  Sw_inv <- solve(Sw + diag(1e-6, k_pca))
+  
+  #Solve Generalized Eigenvalue Problem: inv(Sw) * Sb
+  mat_fisher <- Sw_inv %*% Sb
+  
+  eig_fisher <- eigen(mat_fisher)
+  
+  #Take Real parts to remove imaginary residuals from errors (just for numerical stability)
+  D_fisher <- Re(eig_fisher$values)
+  P_fisher <- Re(eig_fisher$vectors)
+  
+  #Fisher produces at most (C-1) non-zero discriminants
+  num_fisher_dims <- num_classes - 1
+  P_fisher <- P_fisher[, 1:num_fisher_dims, drop=FALSE]
+  D_fisher <- D_fisher[1:num_fisher_dims]
+  
+  
+  
+  #Final Projection Matrix
+  
+  #Combine PCA and Fisher projections
+  
+  loadings_final <- P_pca %*% P_fisher
+  
+  #Variance explained ratio
+  variance_ratio <- D_fisher / sum(D_fisher)
+  
+  #Results
+  list(
+    means = mu,               
+    loadings = loadings_final, 
+    eigenvalues = D_fisher,
+    variance_ratio = variance_ratio
+  )
+}
+```
+
+The following plots illustrate the core findings of the Fisher Discriminant Analysis regarding classification capability. The first graph shows how the discriminant power is distributed among the individual axes, highlighting that separability is heavily concentrated in the initial directions. The second plot displays the total cumulative power retained as more axes are included, which guides the optimal dimensional choice for the final kNN classifier.
+
+```{r}
+library(ggplot2)
+library(scales)
+library(dplyr)
+
+#execute the function first
+X_input<-matrix_images
+fisher_result <- fisher(X_input, labels)
+
+#plots
+plot_data_fda <- data.frame(
+  Axis = 1:length(fisher_result$variance_ratio), 
+  Variance = fisher_result$variance_ratio
+)
+plot_data_fda$Cumulative <- cumsum(plot_data_fda$Variance)
+num_ejes_fda <- length(fisher_result$variance_ratio)
+
+#Breaks
+breaks_val_full <- c(1, seq(5, num_ejes_fda, by = 5))
+breaks_val_short <- breaks_val_full[breaks_val_full <= 15]
+if (max(breaks_val_short) < 15) { breaks_val_short <- c(breaks_val_short, 15) }
+breaks_val_short <- unique(breaks_val_short)
+
+#Plot 1
+plot_individual <- ggplot(plot_data_fda, aes(x = Axis, y = Variance)) +
+  geom_bar(stat = "identity", fill = "#348AA7", alpha = 0.9) +
+  scale_x_continuous(breaks = breaks_val_short) + 
+  coord_cartesian(xlim = c(1, 15)) + 
+  labs(
+    title = "Discriminant Power Per Axis ", 
+    x = "Fisher Axis Number", 
+    y = "Proportion of Discriminant Variance"
+  ) +
+  theme_minimal() + 
+  scale_y_continuous(labels = scales::percent)
+
+#Plot 2
+plot_cumulative <- ggplot(plot_data_fda, aes(x = Axis, y = Cumulative)) +
+  geom_line(color = "darkred", size = 1) +
+  geom_point(color = "darkred", size = 3) +
+  scale_x_continuous(breaks = breaks_val_short) + 
+  coord_cartesian(xlim = c(1, 15)) + 
+  labs(
+    title = "Cumulative Discriminant Power", 
+    x = "Fisher Axis Number", 
+    y = "Cumulative Variance Retained"
+  ) +
+  theme_minimal() + 
+  scale_y_continuous(labels = scales::percent)
+
+print(plot_individual)
+print(plot_cumulative)
+```
+
+## Construction of the Fisher-KNN Model
+
+### Classification Logic: Prediction
+
+The following function acts as a constructor for the final classification model, synthesizing the Fisher Discriminant Analysis results with the k-Nearest Neighbors hyperparameters. Its primary role is to project the training dataset into the optimal discriminant subspace and establish the empirical distance bounds ($dist_{min}$ and $dist_{max}$) of the training set. This calibration is essential for normalizing distances, allowing the rejection threshold $\tau$ to be defined as a relative value within the $[0, 1]$ interval, ensuring consistency with the visual evidence obtained during the calibration phase regardless of the specific distance metric employed..
+
+```{r}
+build_fisher_knn_classifier <- function(data, ids, variance_ratio, k, metric, threshold) {
+  fisher_result <- fisher(data, ids)
+  
+  #Project Training Data
+  X_centered <- sweep(as.matrix(data), 2, fisher_result$means)
+  
+  #Select dimensions based on the parameter variance ratio
+  cum_var <- cumsum(fisher_result$variance_ratio)
+  n_fd <- which(cum_var >= variance_ratio)[1]
+  
+  #Subset loadings and project training data to Fisher space
+  loadings_used <- fisher_result$loadings[, 1:n_fd, drop = FALSE]
+  scores_train <- X_centered %*% loadings_used
+  
+  #Empirical distance scaling to match calibration bounds
+  #We calculate the distance matrix to extract the same min/max used in the plots
+  if(metric == "cosine") {
+    #Calculate Cosine distance (1 - similarity) for the training set
+    dot_prod <- scores_train %*% t(scores_train)
+    norms <- sqrt(rowSums(scores_train^2))
+    #Handle stability and division by zero
+    norms[norms < 1e-10] <- 1e-10
+    sim_matrix <- dot_prod / (norms %*% t(norms))
+    sim_matrix[sim_matrix > 1] <- 1; sim_matrix[sim_matrix < -1] <- -1
+    d_matrix <- 1 - sim_matrix
+  } else {
+    #Standard distance matrix for Euclidean or Manhattan
+    d_matrix <- as.matrix(dist(scores_train, method = metric))
+  }
+  
+  #Store the empirical bounds for Min-Max normalization
+  #Using min(d_matrix) to stay consistent with the analyze_fisher_threshold_distributions logic
+  dist_min <- min(d_matrix)
+  dist_max <- max(d_matrix)
+  
+  #Prevent numerical errors if max <= min for the formula of normalization in the next step
+  if(dist_max <= dist_min) dist_max <- dist_min + 1e-6
+  
+  #Return a list containing all elements required for the classification phase.
+  list(
+    means = fisher_result$means,
+    loadings = loadings_used,
+    scores_train = scores_train,
+    ids = ids,
+    k = k,
+    metric = metric,
+    threshold = threshold,
+    n_fd = n_fd,
+    dist_min = dist_min, 
+    dist_max = dist_max
+  )
+}
+```
+
+### Prediction Algorithm: Fisher-KNN with Rejection
+
+At this stage, the following function defines the prediction methodology. It is designed to take a generic trained model object, which encapsulates all fixed parameters, including the projection matrix $W_{opt}$, the chosen metric, and the rejection threshold, and apply it to classify a new image.
+
+The classification process is executed in the following steps:
+
+-   Projection, Normalization, and Rejection: The new image, input as a raw vector of pixel values, is centered by subtracting the mean pixel vector derived from the training set and then projected into the Fisher subspace defined by the model. Distances to all training samples, that is, the gallery of known faces, are then computed in this low-dimensional feature space. A key feature is the normalization of these distances using the model's stored bounds ($dist_{min}$ and $dist_{max}$). This ensures that the rejection logic works consistently: if the normalized distance of the new image to its nearest neighbor exceeds the model's threshold, the image is rejected as "0" (open-set recognition). This step is independent of the determination of the optimal threshold value, which was established during the previous calibration phase.
+
+-   Standard $k$NN Voting: for samples that pass the rejection filter, the function implements the Standard $k$NN Voting logic.This involves selecting the $k$ closest neighbors in the Fisher space and assigning the identity corresponding to the class label with the highest frequency among those $k$ neighbors, providing the final identity prediction.
+
+```{r}
+classify_fisher_knn <- function(new_image, model) {
+  
+  #Step 1: Projection
+  x <- as.numeric(new_image)
+  
+  #Center the new image using the mean vector stored in the input model
+  x_centered <- x - model$means
+  
+  #Projecting pixels into Fisher space where The loadings matrix represents the W_opt       determined by the model inputed
+  fd_new <- as.vector(x_centered %*% model$loadings)
+  
+  #Prepare the new vector for distance calculation
+  n_train <- nrow(model$scores_train)
+  #The new image is repeated on each row of a matrix with the proper dimensions for the     distance calculation
+  fd_new_mat <- matrix(fd_new, nrow = n_train, ncol = model$n_fd, byrow = TRUE)
+  
+  
+  #Step 2: Distance Calculation 
+  
+  # Compute distance using the specific metric defined in the model
+  if(model$metric == "euclidean") {
+    dists <- sqrt(rowSums((model$scores_train - fd_new_mat)^2))
+  } else if(model$metric == "manhattan") {
+    dists <- rowSums(abs(model$scores_train - fd_new_mat))
+  } else if(model$metric == "cosine") {
+    num <- rowSums(model$scores_train * fd_new_mat)
+    den <- sqrt(rowSums(model$scores_train^2)) * sqrt(sum(fd_new^2))
+    den[den < 1e-10] <- 1e-10 
+    cos_sim <- num / den
+    cos_sim[cos_sim > 1] <- 1; cos_sim[cos_sim < -1] <- -1
+    dists <- 1 - cos_sim
+  }
+  #Step 3: Normalization 
+  
+  #Scale distances to [0, 1] using the bounds calibrated in the model
+  range_dist <- model$dist_max - model$dist_min
+  if(range_dist == 0) range_dist <- 1e-10 #to avoid numerical errors again
+  
+  dists_norm <- (dists - model$dist_min) / range_dist #normalize the distance
+  
+  #Step 4: Rejection Step
+  # Check distance to the single nearest neighbor
+  min_dist_observed <- min(dists_norm)
+  
+  #If that distance exceeds the model's specific threshold, reject as "Unknown"
+  if(min_dist_observed > model$threshold){
+    return("0") 
+  }
+  
+  #Step 5: k-NN Voting
+  # Just if the the image wasn't rejected by the threshold logic
+  order_idx <- order(dists_norm)
+  top_k_idx <- order_idx[1:model$k] #use the optimal k stored in the model
+  top_k_labels <- model$ids[top_k_idx] #Get the actual class names corresponding to the neighbours
+  
+  votes <- table(top_k_labels)
+  prediction <- names(sort(votes, decreasing = TRUE))[1]
+  
+  return(prediction)
+}
+```
+
+### Hyperparameter Optimization and Model Selection
+
+In this point, to achieve the highest recognition performance, we implement a Grid Search strategy combined with $k$-fold Cross-Validation ($k=5$). This process systematically evaluates all possible combinations of the following hyperparameters:
+
+-   Variance Ratio: Determines how many Fisher axes are retained ($0.95$, $0.99$, etc.)
+
+-   Neighbors ($k$): The number of neighbors involved in the voting process.
+
+-   Distance Metric: Euclidean, Manhattan, or Cosine.
+
+Crucially, this optimization sets the threshold equals to 2, so that any data is rejected at this step. By splitting the training set into five folds, the model is trained on four and validated on the remaining one, rotating this process to ensure that the final accuracy is robust and not a result of overfitting.
+
+```{r}
+optimize_fisher_knn_hyperparameters <- function(data, ids, var_list, k_list, metric_list, folds = 5){
+  set.seed(123) 
+  n <- nrow(data)
+  
+  #Assigning samples to cross-validation folds
+  idx <- sample(rep(1:folds, length.out = n)) #previous step to randomly assign each image to one of the k-folds
+  results <- data.frame()
+  
+  total_iter <- length(var_list) * length(k_list) * length(metric_list)
+  current_iter <- 0
+
+  for(var in var_list){
+    for(k in k_list){
+      for(metric in metric_list){
+        
+        thr <- 2
+        
+        current_iter <- current_iter + 1
+        cat(sprintf("[%d/%d] Testing -> Var: %.2f | K: %d | Met: %s  ", 
+            current_iter, total_iter, var, k, metric))
+        
+        acc_vec <- c()
+        
+        #Cross-Validation loop
+        for(f in 1:folds){
+          test_idx <- which(idx == f) #selecting indexes
+          train_idx <- setdiff(1:n, test_idx)
+          
+          #Building the model on the training fold
+          model <- build_fisher_knn_classifier(data[train_idx,], ids[train_idx], var, k, metric, thr)
+          
+          #Predicting identities for the test fold
+          y_pred <- sapply(1:length(test_idx), function(i) {
+            classify_fisher_knn(data[test_idx[i],], model)
+          })
+          
+          #Calculating accuracy for the current fold
+          acc_vec <- c(acc_vec, mean(as.character(y_pred) == as.character(ids[test_idx])))
+        }
+        
+        mean_acc <- mean(acc_vec)
+        cat(sprintf("Acc: %.4f\n", mean_acc))
+        
+        #Storing parameters and performance results
+      results <- rbind(results, data.frame(variance = var, k = k, metric = metric, threshold = thr, accuracy = mean_acc, sd = sd(acc_vec)))
+      }
+    }
+  }
+  
+  #Returning the best configuration and the full results table
+  return(list(best = results[which.max(results$accuracy), ], all = results))
+}
+```
+
+Once the optimization framework is defined, the specific ranges for the hyperparameters are established to evaluate the model's performance.
+
+```{r, results='hide'}
+
+v_list <- c(0.90, 0.95, 0.99)
+k_list <- c(1, 3, 5)
+m_list <- c("euclidean", "manhattan", "cosine")
+
+opt_results_fisher <- optimize_fisher_knn_hyperparameters(
+  data = X_input, 
+  ids = labels, 
+  var_list = v_list, 
+  k_list = k_list, 
+  metric_list = m_list, 
+  folds = 5
+)
+```
+
+```{r}
+#Displaying results
+library(knitr)
+library(kableExtra) 
+
+full_results_clean <- opt_results_fisher$all %>%
+  arrange(desc(accuracy)) %>%
+  mutate(metric = tools::toTitleCase(metric))
+
+full_results_clean %>%
+  kable(
+    format = "html",
+    digits = 4,
+    col.names = c("Variance Ratio", "k", "Metric", "Threshold", "Mean Accuracy", "Stability (SD)"),
+    align = 'c'
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#348AA7") %>%
+  row_spec(1, bold = TRUE, background = "#E8F4F8")
+```
+
+The grid search results reveal a significant performance breakthrough when increasing the variance ratio from $0.95$ to $0.99$, where accuracy jumps from approximately $72\%$ to over $92\%$. This indicates that the subtle discriminative information contained in the higher-order Fisher axes is crucial for resolving fine-grained facial differences.
+
+Regarding the distance metrics, Manhattan ($L_1$) consistently outperforms Euclidean and Cosine, reaching a peak accuracy of $92.67\%$. This superiority suggests that the $L_1$ norm is more robust against outliers in the high-dimensional Fisher space. Furthermore, the stability between $k=1$ and $k=3$ reflects a clear local class structure, while the slight performance drop at $k=5$ confirms that a smaller neighborhood is preferable given the limited number of training samples per person. The winner configuration—Manhattan distance, $k=1$ (or 3), and $0.99$ variance—provides a highly reliable balance for the final recognition system.
+
+### Rejection Threshold Calibration
+
+To enhance the reliability of the recognition system, a mechanism to reject images that do not belong to the trained identities is required. Although FDA effectively separates classes, the raw distances obtained are not directly comparable due to their dependence on the selected metric, which are Euclidean, Manhattan, or Cosine. To establish a universal decision rule, Min-Max Normalization is applied to map all distances into a relative range between $0$ and $1$.
+
+The objective is to identify the optimal threshold ($\tau$) by analyzing the Probability Density Functions (PDF)\*\* of the following two distinct groups:
+
+-   Intra-class distances: These represent the variance within a single individual's set of images, often caused by variations in lighting, shadows, or facial expressions.
+
+-   Inter-class distances: These quantify the separation between different individuals, measuring the model's discriminative power.
+
+    ```{r}
+    library(ggplot2)
+
+    analyze_fisher_threshold_distributions <- function(data, labels, metric = "euclidean") {
+
+    #Calculate Distance Matrix
+      
+    n <- nrow(data)
+    X <- as.matrix(data)
+
+    if (metric == "euclidean") {
+      dist_mat <- as.matrix(dist(X, method = "euclidean"))
+      } 
+    else if (metric == "manhattan") {
+      dist_mat <- as.matrix(dist(X, method = "manhattan"))
+      } 
+    else if (metric == "cosine") {
+      
+      #Cosine distance calculation
+      
+      sim <- X %*% t(X)
+      norms <- sqrt(rowSums(X^2))
+      #Avoid division by zero for numerical stability
+      norms[norms < 1e-10] <- 1e-10
+      sim <- sim / (norms %*% t(norms))
+      #Ensures numerical stability and handles minor floating-point errors 
+      sim[sim > 1] <- 1; sim[sim < -1] <- -1
+      #Convert Similarity to Distance: Cosine Distance = 1 - Cosine Similarity
+      dist_mat <- 1 - sim
+    }
+
+    #Normalization 
+    min_val <- min(dist_mat)
+    max_val <- max(dist_mat)
+    if ((max_val - min_val) > 1e-10) {
+    dist_mat <- (dist_mat - min_val) / (max_val - min_val)
+    }
+
+    #Separate Intra-class vs Inter-class
+
+    #Creates a boolean matrix: TRUE if labels match (same person)
+    match_matrix <- outer(labels, labels, "==")
+    lower_tri_mask <- lower.tri(dist_mat)
+    # Extracts distances where labels match (Intra-class / Genuine distribution)
+    intra_distances <- dist_mat[match_matrix & lower_tri_mask]
+    #Extracts distances where labels do not match (Inter-class / Impostor distribution)
+    inter_distances <- dist_mat[!match_matrix & lower_tri_mask]
+
+    #Generate Graphic with Normalized Heights 
+
+    #Prepare data frame for density plotting
+    df_plot <- data.frame(
+    distance = c(intra_distances, inter_distances),
+    type = c(rep("Intra-class (Same Person)", length(intra_distances)),
+    rep("Inter-class (Different Person)", length(inter_distances)))
+    )
+
+    p <- ggplot(df_plot, aes(x = distance, fill = type)) +
+    geom_density(aes(y = after_stat(scaled)), alpha = 0.5, position = "identity", adjust = 1.5) +
+    scale_fill_manual(values = c("Intra-class (Same Person)" = "blue", "Inter-class (Different Person)" = "red")) +
+    labs(title = paste("Fisher Separability Analysis - Metric:", metric),
+    x = "Normalized Distance [0-1]", y = "Relative Density (Scaled to 1.0)") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+    print(p)
+    }
+    ```
+
+    In the following graphs, the distribution of these two distance populations is observed for each of the mentioned metrics. The goal is to visualize the separation between the blue curve (Intra-class) and the red curve (Inter-class). The distance between the peaks of both curves forms a "safety valley".The visual selection of the threshold $\tau$ is performed by choosing a point within this valley. This point ensures that the probability of False Acceptance (confusing two people, red curve) and False Rejection (rejecting the correct person, blue curve) are minimized simultaneously, providing an optimal balance for the recognition system.
+
+    ```{r}
+    #Calculate the projection parameters on the full training set
+    fisher_params <- fisher(X_input, labels)
+
+    # Center the original training data
+    X_centered <- sweep(X_input, 2, fisher_params$means)
+
+    # Project the centered data onto the final combined PCA+FDA subspace (the full space in this case)
+    X_projected <- X_centered %*% fisher_params$loadings
+
+    #Plots
+    #The function analyzes the intra-class vs inter-class distributions in the projected space #to visually determine the optimal threshold
+    #analyze_fisher_threshold_distributions(X_projected, labels, "euclidean")
+    analyze_fisher_threshold_distributions(X_projected, labels, "manhattan")
+    #analyze_fisher_threshold_distributions(X_projected, labels, "cosine")
+    ```
+
+Upon analyzing the generated distributions, a significant and clear gap is observed between the intra-class (blue) and inter-class (red) populations, so the Fisher Discriminant analysis has gotten good results. Consequently, the value $0.20$ for Manhattan is selected, as it represents the optimal midpoint within the "safety valley."
+
+## Final Model Validation: Performance Assessment
+
+After identifying the optimal hyperparameters through the grid search process, it is essential to perform a final validation to verify the system's reliability. This protocol executes a clean 5-fold cross-validation using these best hyperparameters. By assessing the model across different data splits, we ensure that the high accuracy achieved is not a result of a specific partition but a reflection of the model's true discriminative power in the Fisher space.
+
+```{r}
+validate_simple_fisher <- function(data, labels, best_params){
+  set.seed(123) 
+  n_folds <- 5
+  n_samples <- nrow(data)
+  
+  #Assigning samples to folds
+  folds_index <- sample(rep(1:n_folds, length.out = n_samples))
+  fold_results <- c()
+
+  for(i in 1:n_folds){
+    idx_test <- which(folds_index == i)
+    idx_train <- setdiff(1:n_samples, idx_test)
+    
+    #Build model with optimal parameters
+    model <- build_fisher_knn_classifier(
+      data = data[idx_train, ], 
+      ids = labels[idx_train], 
+      variance_ratio = best_params$variance, 
+      k = best_params$k, 
+      metric = as.character(best_params$metric), 
+      threshold = 0.2
+    )
+
+    #Predict and calculate accuracy for the current fold
+    predictions <- sapply(1:length(idx_test), function(j) {
+      classify_fisher_knn(data[idx_test[j], ], model)
+    })
+    
+    acc <- mean(as.character(predictions) == as.character(labels[idx_test]))
+    fold_results <- c(fold_results, acc)
+  }
+  
+  #Return the full vector of results 
+  return(fold_results)
+}
+```
+
+With the validation function defined, it is executed with the best hyperparameters as mentioned before. The results are presented in the following table to provide a clear view of the system's stability and its ability to generalize across different data subsets.
+
+```{r}
+#Displaying results
+fold_accuracies <- validate_simple_fisher(X_input, labels, opt_results_fisher$best)
+
+validation_table <- data.frame(
+  Iteration = c(paste("Fold", 1:5), "Total Average"),
+  Accuracy = c(fold_accuracies, mean(fold_accuracies))
+)
+
+validation_table %>%
+  kable(
+    format = "html",
+    digits = 4, 
+    align = "c",
+    caption = "Fisher-kNN Final Validation: Accuracy per Fold",
+    col.names = c("Evaluation Phase", "Accuracy Rate")
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    full_width = FALSE, 
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#348AA7") %>%
+  row_spec(nrow(validation_table), bold = TRUE, color = "white", background = "#7B241C")
+```
+
+The final validation yields a mean accuracy of 92.67%, confirming the high efficiency of the Fisher-kNN architecture. The results across the five folds are remarkably consistent, ranging from 0.867 to a perfect 1.000 in Fold 2. This level of stability indicates that the Fisher Discriminant Analysis successfully addressed the Small Sample Size problem by creating a projection where intra-class variance is minimized and inter-class separation is maximized. The fact that the system maintains such high precision with only 6 images per person proves its robustness for professional facial recognition tasks among 25 different identities.
+
+# Comparing the models with external pictures
+
+Throughout this assignment, we have obtained a total of three models than ca be used for facial recognition: applying PCA, appyling PCA + FDA and not applying any technique. Out of all of them, the most accurate one is the PCA one, followed by the model that does not implement any extra technique and, finally, the least accurate is the one that incorporates both FDA + PCA.
+
+At first, this might seem contradictory, since FDA separates very well data from different classes and, thus, it should also be the most accurate model. However, this can be explained due to the small size of the database. FDA is a supervised method, meaning that when the database is small, the model learns the noise from the training sample, resulting in less accurate predictions. If we were working with a bigger sample, probably the results would significantly vary.
+
+Anyway, provided that the main objective of this assignment is to actually create a facial recognition system, it would be important to verify which of these models will work better on images that are outside of the training sample.
+
+The external images we will be using to test our three models come from the same dataset as our Training sample, **faces94**, which was downloaded from Kaggle. Some random images have been selected from this dataset (inluding different images from some individuals who already are in the Training subset.
+
+Let's first upload all the images that will be used for the external evaluation in a new dataset. The uploading process will be completely analogous to the one we did with the training sample.
+
+```{r}
+library(magick)
+library(gtools)
+
+route_test <- "Testing2"
+files_test <- list.files(route_test, full.names = TRUE, pattern = "\\.jpg$")
+files_test <- mixedsort(files_test) 
+images_list_test <- lapply(files_test, function(img_path) {
+
+  img <- image_read(img_path) 
+  img_rgb <- image_convert(img, colorspace = "RGB") 
+  arr <- image_data(img_rgb) 
+
+  R <- as.integer(arr[1,,])
+  G <- as.integer(arr[2,,])
+  B <- as.integer(arr[3,,])
+
+  R <- as.vector(R)
+  G <- as.vector(G)
+  B <- as.vector(B)
+  pixel_values <- c(R, G, B) / 255 
+
+  return(pixel_values)
+})
+
+# Convertimos a matriz y luego a dataframe
+matrix_images_test <- do.call(rbind, images_list_test)
+df_images_test <- as.data.frame(matrix_images_test)
+
+X_test_final <- as.matrix(df_images_test)
+```
+
+Now, we will use our three previous classifiers to do the predictions for the outer evaluation:
+
+```{r}
+final_model_pca <- build_knn_classifier(X,labels, variance_ratio = optimization_results$best$variance, metric = as.character(optimization_results$best$metric), k = optimization_results$best$k, threshold = 0.2)
+
+predictions_pca <- apply(X_test_final, 1, function(row) {
+    classify_knn(row, final_model_pca)
+  })
+```
+
+```{r}
+final_model_raw <- build_raw_knn_classifier(X,labels, metric = "euclidean", k = 1, threshold = 0.2)
+
+predictions_raw <- apply(X_test_final, 1, function(row) {
+    classify_raw_knn(row, final_model_raw)
+  })
+```
+
+```{r}
+final_model_fisher <- build_fisher_knn_classifier(X,labels, variance_ratio = 0.99, metric = "manhattan", k = 1, threshold = 0.1)
+
+predictions_fisher <- apply(X_test_final, 1, function(row) {
+    classify_fisher_knn(row, final_model_fisher)
+  })
+```
+
+And, finally, we compare the results from each of the three classifiers, just to see which was the most accurate on the external evaluation:
+
+```{r}
+real_labels <- c("Person 1", "Person 2", "0", "0", "Person 15", 
+                 "Person 19", "Person 20", "0", "0", "0")
+comparison_table <- data.frame(
+  File = basename(files_test),
+  Real_Value = real_labels,
+  PCA_Pred = predictions_pca,
+  Raw_Pred = predictions_raw,
+  Fisher_Pred = predictions_fisher
+)
+print(comparison_table)
+```
+
+All in all, as it can be seen, all the three classifiers are great predictors. Their main disadvantage is that they tend to classify incorrectly people from outside the database. However, this may be more due to some threshold adjustments than because the model is not working properly. These three are great facial recognition systems overall.
